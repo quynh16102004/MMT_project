@@ -1,0 +1,97 @@
+% =========================================================================
+% CHƯƠNG TRÌNH MÔ PHỎNG CSMA/CD VÀ ĐỊNH TUYẾN QUA ROUTER
+% =========================================================================
+clear all; clc;
+% --- 1. KHỞI TẠO THÔNG SỐ (Bổ sung tham số theo yêu cầu của thầy) ---
+TOTALSIM = 10000;       % Tổng thời gian mô phỏng
+lambda = 0.5;           % Tốc độ sinh gói tin (Phân phối Poisson)
+frameslot = 500;        % Thời gian truyền 1 frame cơ bản (Transmission Delay)
+td = 80;                % Trễ lan truyền trên BUS (Propagation Delay) -> Thầy hỏi "thời gian có ảnh hưởng k?" chính là cái này!
+pd = 10;                % Trễ xử lý gói tin
+tdelay = td + pd;       % Tổng trễ nội bộ
+tbackoff = frameslot;   % Slot time dùng cho Backoff
+maxbackoff = 3;         % Ngưỡng va chạm (quá 3 lần sẽ drop gói tin)
+% Khởi tạo hàng đợi chứa gói tin cho 2 LAN
+elist1 = []; % Bus 1 (Node 1, 2)
+elist2 = []; % Bus 2 (Node 3, 4)
+GENTIMECURSOR = [0 0 0 0]; % Bộ đếm thời gian sinh gói cho 4 Node
+CLOCK = 0;   % Đồng hồ hệ thống
+% --- 2. THIẾT KẾ CẤU TRÚC BẢN TIN (Sinh gói tin ngẫu nhiên) ---
+% Cấu trúc: [SRC, DEST, GENTIME, TXTIME, RXTIME, CURTIME, COLLISIONS]
+for i = 1:50 % Sinh thử 50 gói tin ban đầu để chạy mô phỏng
+    src_node = randi(1); % Đã sửa
+    dest_node = randi(4); % Đã sửa
+    while src_node == dest_node % Đảm bảo nguồn khác đích
+        dest_node = randi(4); % LỖI DÒNG 28 LÀ Ở ĐÂY NÀY, tao sửa luôn rồi!
+    end
+    
+    % Thay thế hàm exprnd bằng công thức để không cần Toolbox
+    interarvtime = round(frameslot * (-log(rand()) / lambda));
+    GENTIMECURSOR(src_node) = GENTIMECURSOR(src_node) + interarvtime;
+    
+    % Bản tin được tạo ra
+    pkt = [src_node, dest_node, GENTIMECURSOR(src_node), 0, 0, GENTIMECURSOR(src_node), 0];
+    
+    if (src_node == 1 || src_node == 2)
+        elist1 = [elist1; pkt];
+    else
+        elist2 = [elist2; pkt];
+    end
+end
+% --- 3. VÒNG LẶP MÔ PHỎNG CHÍNH ---
+disp('Bắt đầu chạy mô phỏng...');
+while CLOCK < TOTALSIM
+    % Sắp xếp lại hàng đợi theo thời gian hiện tại (CURTIME)
+    if ~isempty(elist1), elist1 = sortrows(elist1, 6); end
+    
+    % Giả sử xét LAN 1 trước
+    if size(elist1, 1) >= 2
+        % Kiểm tra va chạm: Nếu 2 gói tin xuất hiện sát nhau < trễ lan truyền
+        timediff1 = elist1(2, 6) - elist1(1, 6);
+        
+        if timediff1 <= pd % XẢY RA XUNG ĐỘT (ĐỤNG XE)
+            elist1(1, 7) = elist1(1, 7) + 1; % Tăng số lần va chạm
+            elist1(2, 7) = elist1(2, 7) + 1;
+            
+            % Thuật toán Backoff: Tính thời gian lùi lại
+            bk1 = (randi(2^min(elist1(1,7), maxbackoff)) - 1) * tbackoff;
+            bk2 = (randi(2^min(elist1(2,7), maxbackoff)) - 1) * tbackoff;
+            
+            % Cập nhật lại thời gian sẽ thử gửi lại
+            elist1(1, 6) = elist1(1, 6) + bk1;
+            elist1(2, 6) = elist1(2, 6) + bk2;
+            
+        else % KHÔNG XUNG ĐỘT -> TRUYỀN THÀNH CÔNG HOẶC ĐỊNH TUYẾN
+            src = elist1(1, 1);
+            dst = elist1(1, 2);
+            
+            % KIỂM TRA: Có cần qua Router không?
+            if (dst == 3 || dst == 4) 
+                % Gọi mô phỏng định tuyến (Dijkstra)
+                [path_cost, delay_them] = routing_dijkstra();
+                tdelay_total = tdelay + delay_them; 
+            else
+                tdelay_total = tdelay; % Nội mạng, truyền bình thường
+            end
+            
+            % Cập nhật thông số thành công cho gói tin
+            if elist1(1, 4) == 0, elist1(1, 4) = elist1(1, 6); end % TXTIME
+            elist1(1, 5) = elist1(1, 6) + tdelay_total; % RXTIME
+            
+            % Đẩy gói tin đã xử lý ra khỏi hàng đợi (Lưu vào mảng kết quả)
+            elist1(1,:) = []; % Xóa khỏi hàng đợi chờ
+        end
+    end
+    
+    % Nhích đồng hồ mô phỏng lên
+    CLOCK = CLOCK + frameslot; 
+end
+disp('Mô phỏng hoàn tất!');
+% --- 4. HÀM ĐỊNH TUYẾN (Dijkstra thu gọn) ---
+function [cost, delay_router] = routing_dijkstra()
+    % Trọng số ngẫu nhiên của các đường link giữa các Router
+    c1 = randi(); c2 = randi(); % TAO SỬA LUÔN 2 CÁI THIẾU Ở ĐÂY NỮA NÀY!
+    % Giả sử thuật toán tìm được đường đi có chi phí tốt nhất
+    cost = min([c1, c2]); 
+    delay_router = cost * 20; % Tính trễ do qua Router
+end
